@@ -26,7 +26,8 @@ export default function Header({ connections = {}, risk = {}, onToggleKillSwitch
         {['binance', 'hyperliquid', 'bitget', 'bybit', 'lighter'].map((venue) => {
           const conn = connections[venue] || {};
           const isConn = conn.connected;
-          const rtt = conn.rtt_ms || 0;
+          const rtt = conn.rtt_ms;
+          const isZeroOrUnmeasured = rtt === 0 || rtt === null || rtt === undefined;
           let rttColor = 'var(--accent-bull)';
           if (rtt > 150) rttColor = 'var(--accent-warning)';
           if (rtt > 300) rttColor = 'var(--accent-bear)';
@@ -35,9 +36,22 @@ export default function Header({ connections = {}, risk = {}, onToggleKillSwitch
             <div key={venue} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
               <span className={`status-dot ${isConn ? 'active' : 'inactive'}`}></span>
               <span style={{ textTransform: 'capitalize', color: 'var(--text-muted)' }}>{venue}</span>
-              {isConn && (
-                <span className="mono" style={{ color: rttColor, fontSize: '11px' }}>
-                  {rtt}ms
+              {isConn ? (
+                isZeroOrUnmeasured ? (
+                  <span
+                    title="Verify Lighter WS connection (0ms latency unverified)"
+                    style={{ color: 'var(--accent-warning)', fontSize: '11px', cursor: 'help', display: 'flex', alignItems: 'center', gap: '2px' }}
+                  >
+                    ⚠️ 0ms
+                  </span>
+                ) : (
+                  <span className="mono" style={{ color: rttColor, fontSize: '11px' }}>
+                    {rtt}ms
+                  </span>
+                )
+              ) : (
+                <span className="mono" style={{ color: 'var(--accent-bear)', fontSize: '10px' }}>
+                  DISCONNECTED
                 </span>
               )}
             </div>

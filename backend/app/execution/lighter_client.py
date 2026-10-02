@@ -591,6 +591,7 @@ class LighterExecutionClient:
 
     async def set_leverage(self, leverage: float, symbol: str = "BTC") -> bool:
         if self.is_simulation:
+            self.leverage = float(leverage)
             logger.info(f"[Lighter Simulator] Set leverage to {leverage}x")
             return True
             
@@ -614,9 +615,10 @@ class LighterExecutionClient:
             tx_info = None
 
             if signer_client:
+                # FINAL_FIX #1: Use fraction parameter required by Lighter native SignerClient
                 res_lev = signer_client.sign_update_leverage(
                     market_index=int(spec["market_id"]),
-                    initial_margin_fraction=int(initial_margin_fraction),
+                    fraction=int(initial_margin_fraction),
                     margin_mode=0, # Cross Margin
                     nonce=int(nonce),
                     api_key_index=api_idx,
@@ -658,6 +660,7 @@ class LighterExecutionClient:
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
             if tx_resp.json().get("code") == 200:
+                self.leverage = float(leverage)
                 logger.info(f"[Lighter Live] Successfully set leverage to {leverage}x")
                 return True
             else:

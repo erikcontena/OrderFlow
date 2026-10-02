@@ -67,9 +67,19 @@ export default function ExchangeHealthPanel({ exchangeHealth = {} }) {
               {/* RTT + Age */}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-dim)' }}>
                 <span>RTT:</span>
-                <span className="mono" style={{ color: rtt < 150 ? 'var(--accent-bull)' : 'var(--accent-warning)', fontWeight: 600 }}>
-                  {rtt}ms
-                </span>
+                {isConn ? (
+                  (rtt === 0 || rtt === null || rtt === undefined) ? (
+                    <span title="Verify Lighter WS connection (0ms latency unverified)" style={{ color: 'var(--accent-warning)', cursor: 'help' }}>
+                      ⚠️ 0ms
+                    </span>
+                  ) : (
+                    <span className="mono" style={{ color: rtt < 150 ? 'var(--accent-bull)' : 'var(--accent-warning)', fontWeight: 600 }}>
+                      {rtt}ms
+                    </span>
+                  )
+                ) : (
+                  <span style={{ color: 'var(--accent-bear)', fontWeight: 700, fontSize: '10px' }}>DISCONNECTED</span>
+                )}
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-dim)' }}>

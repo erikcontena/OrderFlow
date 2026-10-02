@@ -157,6 +157,15 @@ async def get_bot_config():
 
 @router.post("/bot/config")
 async def update_bot_config(req: BotConfig):
+    # FINAL_FIX #1D: Update leverage and dispatch to execution client
+    if hasattr(req, "leverage") and req.leverage is not None:
+        global_bot_config.leverage = float(req.leverage)
+        try:
+            await state.lighter_client.set_leverage(float(req.leverage), symbol="BTC")
+            state.lighter_client.leverage = float(req.leverage)
+        except Exception as le:
+            logger.warning(f"[BotConfig] Failed to set client leverage: {le}")
+
     global_bot_config.risk_per_trade_pct = req.risk_per_trade_pct
     global_bot_config.tp_percentage = req.tp_percentage
     global_bot_config.sl_percentage = req.sl_percentage
@@ -166,6 +175,7 @@ async def update_bot_config(req: BotConfig):
     
     # Update DB
     await DBRepository.update_app_config({
+        "leverage": global_bot_config.leverage,
         "risk_per_trade_pct": req.risk_per_trade_pct,
         "tp_percentage": req.tp_percentage,
         "sl_percentage": req.sl_percentage,

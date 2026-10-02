@@ -286,6 +286,15 @@ async def autonomous_bot_loop():
     """Deterministic Autonomous HFT Trading Loop adhering to all 9 Audit Rules."""
     from app.core import state
 
+    # FINAL_FIX #1A: Initialize leverage from config before autonomous loop starts
+    target_leverage = global_bot_config.leverage if hasattr(global_bot_config, 'leverage') else 1.0
+    try:
+        await state.lighter_client.set_leverage(target_leverage, symbol="BTC")
+        state.lighter_client.leverage = target_leverage
+        logger.info(f"[Orchestrator] Leverage initialized to {target_leverage}x")
+    except Exception as le:
+        logger.warning(f"[Orchestrator] Failed to initialize leverage on startup: {le}")
+
     last_cancel_confirmed_at: float = 0.0
 
     while True:
@@ -680,6 +689,8 @@ async def analytics_snapshot_loop():
             mid_px = (top_bid[0][0] + top_ask[0][0]) / 2.0 if (top_bid and top_ask) else 0.0
             spread = (top_ask[0][0] - top_bid[0][0]) if (top_bid and top_ask) else 0.0
 
+            # FINAL_FIX #1B: Dynamic active leverage from client/config
+            active_lev = float(getattr(state.lighter_client, "leverage", global_bot_config.leverage) or 1.0)
             await DBRepository.record_analytics_snapshot({
                 "symbol": global_bot_config.symbol,
                 "vpin_value": state.vpin_engine.current_vpin,
@@ -688,7 +699,7 @@ async def analytics_snapshot_loop():
                 "mid_price": mid_px,
                 "spread": spread,
                 "cvd_delta": state.footprint_aggregator.get_cvd_summary().get("delta_1m", 0.0),
-                "active_leverage": 1.0,
+                "active_leverage": active_lev,
             })
         except asyncio.CancelledError:
             break
