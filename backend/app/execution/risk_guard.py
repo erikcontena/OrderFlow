@@ -21,11 +21,18 @@ class RiskGuard:
         vpin_cutoff_threshold: float = 0.65,
         max_rtt_ms: float = 350.0,
         desert_mode_days_limit: int = 14,
+        max_concurrent_positions: int = 1,      # NEW: Prevents double exposure
+        max_daily_loss_usd: float = 100.0,      # NEW: Daily hard kill switch
+        post_loss_cooldown_seconds: int = 300,  # NEW: Time-out after a loss to prevent revenge trading
     ):
         self.client = execution_client
         self.vpin_cutoff_threshold = vpin_cutoff_threshold
         self.max_rtt_ms = max_rtt_ms
         self.desert_mode_days_limit = desert_mode_days_limit
+        
+        self.max_concurrent_positions = max_concurrent_positions
+        self.max_daily_loss_usd = max_daily_loss_usd
+        self.post_loss_cooldown_seconds = post_loss_cooldown_seconds
 
         self.kill_switch_active: bool = False
         self.passive_quoting_paused: bool = False
@@ -33,6 +40,46 @@ class RiskGuard:
         self.desert_mode_active: bool = False
         self.stp_blocked_count: int = 0
         self.alerts: List[str] = []
+        
+        self.daily_pnl_usd: float = 0.0
+        self.last_loss_timestamp: float = 0.0
+        self.current_positions: int = 0
+
+    def can_open_position(self) -> bool:
+        """
+        NEW: Quant risk management check before emitting entry signals.
+        """
+        if self.kill_switch_active:
+            return False
+            
+        # Check exposure limit
+        if self.current_positions >= self.max_concurrent_positions:
+            return False
+            
+        # Check hard daily loss limit
+        if self.daily_pnl_usd <= -self.max_daily_loss_usd:
+            logger.warning(f"[RiskGuard] Daily loss limit breached (${abs(self.daily_pnl_usd):.2f} >= ${self.max_daily_loss_usd:.2f}). Trading halted.")
+            return False
+            
+        # Check post-loss cooldown
+        if time.time() - self.last_loss_timestamp < self.post_loss_cooldown_seconds:
+            logger.info("[RiskGuard] In post-loss cooldown period. Deferring entry.")
+            return False
+            
+        return True
+
+    def register_fill(self, pnl_usd: float, is_close: bool = False):
+        """
+        NEW: Updates internal state after an execution.
+        """
+        if is_close:
+            self.current_positions = max(0, self.current_positions - 1)
+            self.daily_pnl_usd += pnl_usd
+            if pnl_usd < 0:
+                self.last_loss_timestamp = time.time()
+                logger.info(f"[RiskGuard] Loss registered (${abs(pnl_usd):.2f}). Initiating {self.post_loss_cooldown_seconds}s cooldown.")
+        else:
+            self.current_positions += 1
 
     def check_self_trade(self, side: str, price: float) -> bool:
         """
@@ -104,5 +151,7 @@ class RiskGuard:
             "desert_mode_active": self.desert_mode_active,
             "stp_blocked_count": self.stp_blocked_count,
             "vpin_threshold": self.vpin_cutoff_threshold,
+            "daily_pnl_usd": round(self.daily_pnl_usd, 2),
+            "current_positions": self.current_positions,
             "recent_alerts": self.alerts[-5:],
         }

@@ -62,12 +62,17 @@ async def lifespan(app: FastAPI):
         state.lighter_client.switch_mode(network_mode)
         logger.info(f"Loaded config from DB: Mode={network_mode}, BotActive={state.bot_active}, Paper={state.lighter_client.is_simulation}")
     # Initialize ingestors here since they depend on state.handle_trade and state.lighter_client.mode
+    # Build per-exchange on_trade callbacks that include exchange_id
+    # HFT_OPTIMIZATION: lambda captures exchange_id at definition time — zero overhead per call
+    def make_trade_handler(ex_id: str):
+        return lambda price, vol, is_buyer_maker: state.handle_trade(price, vol, is_buyer_maker, exchange_id=ex_id)
+
     state.ingestors = {
-        "binance": BinanceIngestor(symbol=state.books["binance"].symbol, orderbook=state.books["binance"], on_trade=state.handle_trade),
-        "hyperliquid": HyperliquidIngestor(coin=state.books["hyperliquid"].symbol, orderbook=state.books["hyperliquid"], on_trade=state.handle_trade),
-        "bitget": BitgetIngestor(symbol=state.books["bitget"].symbol, orderbook=state.books["bitget"], on_trade=state.handle_trade),
-        "bybit": BybitIngestor(symbol=state.books["bybit"].symbol, orderbook=state.books["bybit"], on_trade=state.handle_trade),
-        "lighter": LighterIngestor(symbol="BTC", orderbook=state.books["lighter"], on_trade=state.handle_trade, mode=state.lighter_client.mode),
+        "binance":      BinanceIngestor(symbol=state.books["binance"].symbol,       orderbook=state.books["binance"],      on_trade=make_trade_handler("binance")),
+        "hyperliquid":  HyperliquidIngestor(coin=state.books["hyperliquid"].symbol, orderbook=state.books["hyperliquid"],  on_trade=make_trade_handler("hyperliquid")),
+        "bitget":       BitgetIngestor(symbol=state.books["bitget"].symbol,         orderbook=state.books["bitget"],       on_trade=make_trade_handler("bitget")),
+        "bybit":        BybitIngestor(symbol=state.books["bybit"].symbol,           orderbook=state.books["bybit"],        on_trade=make_trade_handler("bybit")),
+        "lighter":      LighterIngestor(symbol="BTC", orderbook=state.books["lighter"], on_trade=make_trade_handler("lighter"), mode=state.lighter_client.mode),
     }
 
     for ing in state.ingestors.values():

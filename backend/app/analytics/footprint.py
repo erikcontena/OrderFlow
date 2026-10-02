@@ -96,9 +96,11 @@ class FootprintBar:
 
 
 class FootprintAggregator:
-    def __init__(self, timeframe_seconds: float = 5.0, max_bars: int = 50):
+    def __init__(self, timeframe_seconds: float = 1.0, max_bars: int = 50, bar_type: str = 'volume', volume_threshold: float = 5.0):
         self.timeframe_seconds = timeframe_seconds
         self.max_bars = max_bars
+        self.bar_type = bar_type
+        self.volume_threshold = volume_threshold
         self.bars: Deque[FootprintBar] = deque(maxlen=max_bars)
         
         self.current_bar: Optional[FootprintBar] = None
@@ -109,8 +111,15 @@ class FootprintAggregator:
     def process_trade(self, price: float, qty: float, is_buyer_maker: bool):
         now = time.time()
         
-        # Check if new bar should be formed
-        if not self.current_bar or (now - self.current_bar.start_time >= self.timeframe_seconds):
+        # FIX: HFT Responsiveness (Volume-based bars)
+        should_close = False
+        if self.current_bar:
+            if self.bar_type == 'volume' and self.current_bar.volume >= self.volume_threshold:
+                should_close = True
+            elif now - self.current_bar.start_time >= self.timeframe_seconds:
+                should_close = True
+
+        if not self.current_bar or should_close:
             if self.current_bar:
                 self.current_bar.is_closed = True
                 self.bars.append(self.current_bar)

@@ -21,6 +21,7 @@ class MLOFIEngine:
 
         self.prev_bids: List[Tuple[float, float]] = []
         self.prev_asks: List[Tuple[float, float]] = []
+        self.last_update_timestamp: float = 0.0 # NEW: Anti-Stale tracker
         
         self.history: Deque[dict] = deque(maxlen=history_len)
         self.cumulative_ofi: float = 0.0
@@ -33,14 +34,16 @@ class MLOFIEngine:
         now = time.time()
         k = min(self.depth_levels, len(bids), len(asks))
         if k == 0:
-            return {"weighted_mlofi": 0.0, "level_ofi": [], "cumulative_ofi": self.cumulative_ofi}
+            return {"weighted_mlofi": 0.0, "level_ofi": [], "cumulative_ofi": self.cumulative_ofi, "timestamp": now}
 
         current_bids = bids[:k]
         current_asks = asks[:k]
 
-        if not self.prev_bids or not self.prev_asks:
+        # FIX: Anti-stale mechanism (WebSocket drops)
+        if not self.prev_bids or not self.prev_asks or (now - self.last_update_timestamp > 0.5):
             self.prev_bids = current_bids
             self.prev_asks = current_asks
+            self.last_update_timestamp = now
             return {
                 "weighted_mlofi": 0.0,
                 "level_ofi": [0.0] * k,
@@ -82,6 +85,7 @@ class MLOFIEngine:
 
         self.prev_bids = current_bids
         self.prev_asks = current_asks
+        self.last_update_timestamp = now
 
         result = {
             "weighted_mlofi": round(weighted_mlofi, 4),

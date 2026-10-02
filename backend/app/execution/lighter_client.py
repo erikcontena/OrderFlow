@@ -474,46 +474,82 @@ class LighterExecutionClient:
         except Exception as e:
             logger.debug(f"Failed to sync Lighter account state: {e}")
 
-    async def get_live_trades(self, limit: int = 50) -> List[dict]:
-        """Fetch real trade history from Lighter API"""
+    async def get_live_trades(self, limit: int = 50, cursor: Optional[str] = None) -> List[dict]:
+        """Fetch real trade history from Lighter API.
+        Requires sort_by (mandatory per API spec).
+        PnL per side: ask_account_pnl = PnL when your account is the ask, bid_account_pnl = PnL as bid.
+        """
         try:
-            base_url = "https://mainnet.zklighter.elliot.ai" if self.mode.upper() == "MAINNET" else "https://testnet.zklighter.elliot.ai"
             client = await self.get_http_client()
+            account_idx = int(self.account_index) if str(self.account_index).isdigit() else 0
             
-            # Use account_index to query trades
-            url = f"{base_url}/api/v1/trades?account_index={self.account_index}&limit={limit}"
-            res = await client.get(url)
+            # sort_by is REQUIRED by the Lighter API — omitting it causes 400
+            params: dict = {
+                "account_index": account_idx,
+                "sort_by": "timestamp",
+                "sort_dir": "desc",
+                "limit": min(limit, 100),  # API max is 100
+            }
+            if cursor:
+                params["cursor"] = cursor
+            url = f"{self.base_url}/api/v1/trades"
+            res = await client.get(url, params=params)
             
             if res.status_code == 200:
                 data = res.json()
                 trades = data.get("trades", [])
                 
-                # Format to match frontend expectations
                 formatted = []
                 for t in trades:
-                    # Lighter uses is_maker_buyer / is_maker, or direct side strings.
-                    # We will pass the raw values or approximate it.
                     price = float(t.get("price", 0))
                     size = float(t.get("size", 0))
+                    is_maker_ask: bool = t.get("is_maker_ask", False)
                     
-                    is_buyer = bool(t.get("is_maker_buyer", False))
-                    if t.get("is_maker"):
-                        is_buyer = not is_buyer
-                        
+                    # Determine our side and PnL
+                    ask_id = int(t.get("ask_account_id", -1))
+                    bid_id = int(t.get("bid_account_id", -1))
+                    our_side = "SELL" if ask_id == account_idx else "BUY"
+                    
+                    # is_maker: if maker was ask and we are ask, or maker was bid and we are bid
+                    is_maker = (is_maker_ask and ask_id == account_idx) or (not is_maker_ask and bid_id == account_idx)
+                    
+                    # Pick correct PnL field
+                    if our_side == "SELL":
+                        raw_pnl = t.get("ask_account_pnl", "0") or "0"
+                    else:
+                        raw_pnl = t.get("bid_account_pnl", "0") or "0"
+                    realized_pnl = float(raw_pnl)
+                    
+                    # taker_fee is in raw integer units (need to convert to USD decimal)
+                    # Lighter fee is in 1e-6 USD units (micro-USDC)
+                    fee_raw = t.get("taker_fee", 0) if not is_maker else t.get("maker_fee", 0)
+                    fee_usd = float(fee_raw) / 1_000_000 if fee_raw else 0.0
+                    
+                    # timestamp is in milliseconds (int64)
+                    ts_ms = int(t.get("timestamp", 0))
+                    
                     formatted.append({
-                        "timestamp": int(t.get("timestamp", 0) * 1000) if t.get("timestamp") else time.time() * 1000,
-                        "symbol": t.get("market", "BTC"), # Or symbol depending on endpoint
-                        "side": "BUY" if is_buyer else "SELL", 
+                        "timestamp": ts_ms,
+                        "symbol": "BTC",
+                        "market_id": t.get("market_id", 1),
+                        "side": our_side,
                         "exec_price": price,
                         "exec_amount": size,
-                        "realized_pnl": float(t.get("realized_pnl", 0)),
-                        "fee_paid": float(t.get("fee", 0)),
-                        "role": "Maker" if t.get("is_maker") else "Taker",
-                        "type": "Trade",
-                        "hash": t.get("transaction_hash", ""),
-                        "client_order_index": t.get("client_order_index", "")
+                        "usd_amount": float(t.get("usd_amount", 0) or 0),
+                        "realized_pnl": realized_pnl,
+                        "fee_paid": fee_usd,
+                        "role": "Maker" if is_maker else "Taker",
+                        "type": t.get("type", "trade"),
+                        "hash": t.get("tx_hash", ""),
+                        "trade_id": str(t.get("trade_id", "")),
+                        "client_order_index": str(t.get("ask_client_id", "") if our_side == "SELL" else t.get("bid_client_id", "")),
                     })
-                return formatted
+                return {
+                    "trades": formatted,
+                    "next_cursor": data.get("next_cursor"),
+                }
+            else:
+                logger.error(f"[Lighter Trades] API returned {res.status_code}: {res.text[:200]}")
         except Exception as e:
             logger.error(f"Failed to fetch live trades from Lighter: {e}")
         return []

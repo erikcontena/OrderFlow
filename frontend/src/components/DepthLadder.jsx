@@ -85,9 +85,11 @@ export default function DepthLadder({ orderbooks = {} }) {
               return (
                 <tr key={`ask-${price}`} className="ask-row">
                   <td style={{ textAlign: 'left', fontWeight: 600 }}>${price.toFixed(1)}</td>
-                  <td>{size.toFixed(3)}</td>
+                  <td style={{ position: 'relative' }}>
+                    <div className="depth-bar-ask" style={{ position: 'absolute', inset: 0, width: `${depthPct}%`, pointerEvents: 'none' }} />
+                    <span style={{ position: 'relative', zIndex: 1 }}>{size.toFixed(3)}</span>
+                  </td>
                   <td>{(size).toFixed(3)}</td>
-                  <div className="depth-bar-ask" style={{ width: `${depthPct}%` }} />
                 </tr>
               );
             })}
@@ -105,9 +107,11 @@ export default function DepthLadder({ orderbooks = {} }) {
               return (
                 <tr key={`bid-${price}`} className="bid-row">
                   <td style={{ textAlign: 'left', fontWeight: 600 }}>${price.toFixed(1)}</td>
-                  <td>{size.toFixed(3)}</td>
+                  <td style={{ position: 'relative' }}>
+                    <div className="depth-bar-bid" style={{ position: 'absolute', inset: 0, width: `${depthPct}%`, pointerEvents: 'none' }} />
+                    <span style={{ position: 'relative', zIndex: 1 }}>{size.toFixed(3)}</span>
+                  </td>
                   <td>{(size).toFixed(3)}</td>
-                  <div className="depth-bar-bid" style={{ width: `${depthPct}%` }} />
                 </tr>
               );
             })}

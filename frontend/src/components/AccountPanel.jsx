@@ -1,24 +1,64 @@
 import React, { useState, useEffect } from 'react';
-import { User, Wallet, History, Radio, Server, CheckCircle2, XCircle } from 'lucide-react';
+import { User, Wallet, History, Radio, Server, CheckCircle2, XCircle, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
 
 export default function AccountPanel({ execution }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [cursorStack, setCursorStack] = useState([null]); // stack of cursors for back navigation
+  const tradesPerPage = 10;
 
   useEffect(() => {
-    fetchHistory();
-    const interval = setInterval(fetchHistory, 10000);
+    // Reset pagination and fetch fresh on network/account change
+    setCurrentPage(1);
+    setCursorStack([null]);
+    setNextCursor(null);
+    fetchHistory(null, 1);
+    const interval = setInterval(() => fetchHistory(null, 1), 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [execution.mode, execution.account_index, execution.api_key_index]);
 
-  const fetchHistory = async () => {
+  const fetchHistory = async (cursor = null, page = 1) => {
+    setLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/api/history/trades');
+      let url = `http://localhost:8000/api/history/trades?limit=${tradesPerPage}`;
+      if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+      else url += `&page=${page}`;
+      const res = await fetch(url);
       const data = await res.json();
-      setHistory(data);
+      // API returns {trades: [...], next_cursor: ...} — guard against raw array (paper mode fallback)
+      const trades = Array.isArray(data) ? data : (data.trades ?? []);
+      const nc = data.next_cursor ?? null;
+      setHistory(trades);
+      setNextCursor(nc);
     } catch (err) {
       console.error("Failed to load history", err);
+      setHistory([]);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  // history is always a plain array now; pagination is cursor-based for live, page-based for paper
+  const currentTrades = history; // backend already returns the correct page slice
+  const totalPages = nextCursor ? currentPage + 1 : currentPage; // approximate for display
+
+  const handlePrevPage = () => {
+    if (currentPage <= 1) return;
+    const prevPage = currentPage - 1;
+    setCurrentPage(prevPage);
+    setCursorStack(s => s.slice(0, -1));
+    const prevCursor = cursorStack[cursorStack.length - 2] ?? null;
+    fetchHistory(prevCursor, prevPage);
+  };
+
+  const handleNextPage = () => {
+    if (!nextCursor && currentPage >= totalPages) return;
+    const nextPage = currentPage + 1;
+    setCurrentPage(nextPage);
+    setCursorStack(s => [...s, nextCursor]);
+    fetchHistory(nextCursor, nextPage);
   };
 
   return (
@@ -44,6 +84,9 @@ export default function AccountPanel({ execution }) {
                     const savedIdx = localStorage.getItem('account_index_testnet');
                     fetch('http://localhost:8000/api/execution/mode', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mode: 'testnet' }) }).then(() => {
                       if (savedIdx) fetch('http://localhost:8000/api/execution/account', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ account: savedIdx }) });
+                      setCurrentPage(1);
+                      setCursorStack([null]);
+                      setTimeout(() => fetchHistory(null, 1), 500);
                     });
                   }}
                 >
@@ -57,7 +100,11 @@ export default function AccountPanel({ execution }) {
                     color: execution.mode === 'MAINNET' ? '#fff' : 'var(--text-muted)'
                   }}
                   onClick={() => {
-                    fetch('http://localhost:8000/api/execution/mode', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mode: 'mainnet' }) });
+                    fetch('http://localhost:8000/api/execution/mode', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ mode: 'mainnet' }) }).then(() => {
+                      setCurrentPage(1);
+                      setCursorStack([null]);
+                      setTimeout(() => fetchHistory(null, 1), 500);
+                    });
                   }}
                 >
                   MAINNET
@@ -78,7 +125,9 @@ export default function AccountPanel({ execution }) {
                   style={{ padding: '4px 8px', fontSize: '11px', opacity: execution.is_simulation ? 0.6 : 1 }}
                   onClick={() => {
                     if(window.confirm('WARNING: Enabling Live Execution uses real funds. Proceed?')) {
-                      fetch('http://localhost:8000/api/execution/paper', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ paper: false }) });
+                      fetch('http://localhost:8000/api/execution/paper', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ paper: false }) }).then(() => {
+                        setTimeout(fetchHistory, 500);
+                      });
                     }
                   }}
                 >
@@ -88,7 +137,9 @@ export default function AccountPanel({ execution }) {
                   className={`btn ${execution.is_simulation ? 'btn-bull' : 'btn-subtle'}`}
                   style={{ padding: '4px 8px', fontSize: '11px' }}
                   onClick={() => {
-                    fetch('http://localhost:8000/api/execution/paper', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ paper: true }) });
+                    fetch('http://localhost:8000/api/execution/paper', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ paper: true }) }).then(() => {
+                      setTimeout(fetchHistory, 500);
+                    });
                   }}
                 >
                   PAPER
@@ -187,9 +238,35 @@ export default function AccountPanel({ execution }) {
 
       {/* Transaction History */}
       <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: '300px' }}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <History size={16} color="var(--accent-purple)" />
-          <h3 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>Recent Executed Trades</h3>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <History size={16} color="var(--accent-purple)" />
+            <h3 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>Recent Executed Trades</h3>
+          </div>
+          
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span style={{ fontSize: '12px', color: 'var(--text-dim)' }}>
+              {loading ? 'Loading…' : `Page ${currentPage}`}
+            </span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button 
+                className="btn btn-subtle" 
+                style={{ padding: '4px' }}
+                onClick={handlePrevPage}
+                disabled={currentPage === 1 || loading}
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <button 
+                className="btn btn-subtle" 
+                style={{ padding: '4px' }}
+                onClick={handleNextPage}
+                disabled={(!nextCursor && currentPage >= totalPages) || loading}
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
         </div>
         <div style={{ padding: '0', overflowX: 'auto' }}>
           <table className="ladder-table" style={{ width: '100%', textAlign: 'left' }}>
@@ -209,14 +286,14 @@ export default function AccountPanel({ execution }) {
               </tr>
             </thead>
             <tbody>
-              {history.length === 0 ? (
+              {currentTrades.length === 0 ? (
                 <tr>
                   <td colSpan="11" style={{ textAlign: 'center', padding: '30px', color: 'var(--text-dim)' }}>
-                    No recent trades found in database.
+                    No recent trades found for this index.
                   </td>
                 </tr>
               ) : (
-                history.map((tx, idx) => {
+                currentTrades.map((tx, idx) => {
                   const dateObj = new Date(tx.timestamp);
                   const formattedDate = `${dateObj.getMonth()+1}/${dateObj.getDate()}/${dateObj.getFullYear()} ${dateObj.getHours().toString().padStart(2, '0')}:${dateObj.getMinutes().toString().padStart(2, '0')}:${dateObj.getSeconds().toString().padStart(2, '0')}`;
                   
@@ -268,3 +345,4 @@ export default function AccountPanel({ execution }) {
     </div>
   );
 }
+

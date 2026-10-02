@@ -52,14 +52,15 @@ class VolumeBucket:
 class VPINEngine:
     def __init__(
         self,
-        bucket_size: float = 2.0,       # Size V in base asset (e.g. 2.0 BTC)
+        base_bucket_size: float = 2.0,       # Base Size V in base asset (e.g. 2.0 BTC)
         window_size: int = 50,          # Rolling window of buckets (N)
         student_t_df: int = 4,          # Degrees of freedom for crypto fat tails
         toxicity_threshold: float = 0.65, # Critical VPIN alert threshold
         name: str = "VPIN"
     ):
         self.name = name
-        self.bucket_size = bucket_size
+        self.base_bucket_size = base_bucket_size
+        self.bucket_size = base_bucket_size
         self.window_size = window_size
         self.student_t_df = student_t_df
         self.toxicity_threshold = toxicity_threshold
@@ -75,21 +76,56 @@ class VPINEngine:
         
         # Historical VPIN record for percentile calculation
         self.vpin_history: Deque[float] = deque(maxlen=500)
+        
+        # NEW: Dynamic bucket size based on volatility
+        self.recent_prices: Deque[Tuple[float, float]] = deque(maxlen=10000)
+        self.last_vol_calc_time = 0.0
 
     def process_trade(self, price: float, volume: float, is_taker_buyer: Optional[bool] = None):
         """
         Processes incoming tick/trade from exchange stream.
         Handles volume clock slicing across bucket boundaries.
         """
-        self.last_update_time = time.time()
+        now = time.time()
+        self.last_update_time = now
+        self.recent_prices.append((now, price))
+        
+        # FIX: Dynamic Bucket Sizing based on 5-min realized volatility
+        if now - self.last_vol_calc_time > 10.0:  # Recalculate every 10 seconds
+            self._update_dynamic_bucket_size(now)
+            self.last_vol_calc_time = now
+
         remaining = volume
 
         while remaining > 0:
+            # Sync bucket capacity if it changed dynamically
+            self.current_bucket.bucket_size = self.bucket_size
             remaining = self.current_bucket.add_trade(price, remaining)
             if self.current_bucket.is_complete:
                 self._classify_and_append_bucket(self.current_bucket)
                 self.bucket_count += 1
                 self.current_bucket = VolumeBucket(self.bucket_size, self.bucket_count)
+
+    def _update_dynamic_bucket_size(self, now: float):
+        # Remove prices older than 5 minutes (300 seconds)
+        while self.recent_prices and now - self.recent_prices[0][0] > 300:
+            self.recent_prices.popleft()
+            
+        if len(self.recent_prices) > 30:
+            prices = np.array([p[1] for p in self.recent_prices])
+            returns = np.diff(prices) / prices[:-1]
+            volatility = np.std(returns)
+            
+            # Baseline assumptions: 
+            # Normal 5m crypto vol might be ~0.001 (0.1%). 
+            # We scale bucket size around base_bucket_size based on ratio.
+            vol_ratio = volatility / 0.001
+            
+            # Clamp ratio between 0.5 and 3.0 to prevent extreme bucket sizes
+            vol_ratio = max(0.5, min(3.0, vol_ratio))
+            
+            new_size = self.base_bucket_size * vol_ratio
+            self.bucket_size = round(new_size, 2)
 
     def _classify_and_append_bucket(self, bucket: VolumeBucket):
         """
@@ -116,8 +152,8 @@ class VPINEngine:
         prob_buy = float(stats.t.cdf(z_score, df=self.student_t_df))
         prob_buy = max(0.01, min(0.99, prob_buy))  # Clamp for stability
 
-        bucket.buy_volume = self.bucket_size * prob_buy
-        bucket.sell_volume = self.bucket_size * (1.0 - prob_buy)
+        bucket.buy_volume = bucket.accumulated_volume * prob_buy
+        bucket.sell_volume = bucket.accumulated_volume * (1.0 - prob_buy)
 
         self.completed_buckets.append(bucket)
         self._compute_vpin()
@@ -131,8 +167,9 @@ class VPINEngine:
             return
 
         active_buckets = list(self.completed_buckets)[-self.window_size:]
-        n = len(active_buckets)
-        total_vol = n * self.bucket_size
+        
+        # With dynamic buckets, total_vol is the exact sum of accumulated volume
+        total_vol = sum(b.accumulated_volume for b in active_buckets)
         if total_vol <= 0:
             return
 
@@ -163,6 +200,6 @@ class VPINEngine:
             "buckets_completed": self.bucket_count,
             "active_window": min(len(self.completed_buckets), self.window_size),
             "bucket_size": self.bucket_size,
-            "current_bucket_progress": round(self.current_bucket.accumulated_volume / self.bucket_size, 3),
+            "current_bucket_progress": round(self.current_bucket.accumulated_volume / self.bucket_size, 3) if self.bucket_size > 0 else 0,
             "timestamp": self.last_update_time
         }

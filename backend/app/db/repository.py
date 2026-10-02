@@ -132,17 +132,17 @@ class DBRepository:
             return []
 
     @staticmethod
-    async def get_recent_trades(limit: int = 50) -> List[dict]:
+    async def get_recent_trades(limit: int = 50, offset: int = 0) -> List[dict]:
         """Fetch latest trades from DB."""
         try:
             async with async_session_factory() as session:
-                stmt = select(TradeModel).order_by(desc(TradeModel.executed_at)).limit(limit)
+                stmt = select(TradeModel).order_by(desc(TradeModel.executed_at)).offset(offset).limit(limit)
                 res = await session.execute(stmt)
                 trades = res.scalars().all()
-                return [t.to_dict() for t in trades]
+                return {"trades": [t.to_dict() for t in trades], "next_cursor": None}
         except Exception as e:
             logger.error(f"Error fetching trades from DB: {e}")
-            return []
+            return {"trades": [], "next_cursor": None}
 
     @staticmethod
     async def get_analytics_history(limit: int = 100) -> List[dict]:

@@ -31,6 +31,25 @@ class LimitOrderBook:
         self.last_timestamp = time.time()
         self.is_synced = True
 
+    def apply_delta(self, bids: List[Tuple[float, float]], asks: List[Tuple[float, float]], update_id: int = 0):
+        """Apply incremental order book update. qty=0 means remove price level."""
+        for price, qty in bids:
+            p = float(price)
+            q = float(qty)
+            if q <= 0:
+                self.bids.pop(p, None)
+            else:
+                self.bids[p] = q
+        for price, qty in asks:
+            p = float(price)
+            q = float(qty)
+            if q <= 0:
+                self.asks.pop(p, None)
+            else:
+                self.asks[p] = q
+        self.last_update_id = update_id
+        self.last_timestamp = time.time()
+
     def update_bid(self, price: float, qty: float):
         if qty <= 0:
             self.bids.pop(price, None)

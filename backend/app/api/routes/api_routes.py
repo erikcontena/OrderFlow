@@ -23,11 +23,13 @@ async def get_history_orders(limit: int = 50):
     return await DBRepository.get_recent_orders(limit=limit)
 
 @router.get("/history/trades")
-async def get_history_trades(limit: int = 50):
-    live_trades = await state.lighter_client.get_live_trades(limit=limit)
-    if live_trades:
+async def get_history_trades(limit: int = 50, cursor: str = None, page: int = 1):
+    if state.lighter_client.is_simulation:
+        offset = (page - 1) * limit
+        return await DBRepository.get_recent_trades(limit=limit, offset=offset)
+    else:
+        live_trades = await state.lighter_client.get_live_trades(limit=limit, cursor=cursor)
         return live_trades
-    return await DBRepository.get_recent_trades(limit=limit)
 
 @router.get("/history/analytics")
 async def get_history_analytics(limit: int = 100):
@@ -98,11 +100,11 @@ async def switch_mode(req: ModeSwitchRequest):
     # Reload config for the selected mode
     db_config = await DBRepository.get_app_config()
     if mode == "mainnet":
-        state.lighter_client.account_index = db_config.get("mainnet_account_index", "0")
-        state.lighter_client.api_key_index = db_config.get("mainnet_api_key_index", "4")
+        state.lighter_client.set_account_index(db_config.get("mainnet_account_index", "0"))
+        state.lighter_client.api_key_index = str(db_config.get("mainnet_api_key_index", "4"))
     else:
-        state.lighter_client.account_index = db_config.get("testnet_account_index", "0")
-        state.lighter_client.api_key_index = db_config.get("testnet_api_key_index", "4")
+        state.lighter_client.set_account_index(db_config.get("testnet_account_index", "0"))
+        state.lighter_client.api_key_index = str(db_config.get("testnet_api_key_index", "4"))
     
     if not state.lighter_client.is_simulation:
         await state.lighter_client.sync_account_state()
