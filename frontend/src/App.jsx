@@ -8,6 +8,7 @@ import ExecutionPanel from './components/ExecutionPanel';
 import BotConfigPanel from './components/BotConfigPanel';
 import VpinChart from './components/VpinChart';
 import AccountPanel from './components/AccountPanel';
+import TelemetryView from './components/TelemetryView';
 
 export default function App() {
   const [telemetry, setTelemetry] = useState({
@@ -116,6 +117,9 @@ export default function App() {
         <button className={`btn ${activeTab === 'dashboard' ? 'btn-bull' : 'btn-subtle'}`} onClick={() => setActiveTab('dashboard')}>
           Live Dashboard
         </button>
+        <button className={`btn ${activeTab === 'telemetry' ? 'btn-bull' : 'btn-subtle'}`} onClick={() => setActiveTab('telemetry')}>
+          Signals & PnL Curve
+        </button>
         <button className={`btn ${activeTab === 'analytics' ? 'btn-bull' : 'btn-subtle'}`} onClick={() => setActiveTab('analytics')}>
           Analytics & Settings
         </button>
@@ -150,6 +154,12 @@ export default function App() {
               botActive={telemetry.bot_active}
             />
           </aside>
+        </main>
+      )}
+
+      {activeTab === 'telemetry' && (
+        <main style={{ padding: '0 24px 24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <TelemetryView />
         </main>
       )}
 

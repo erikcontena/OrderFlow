@@ -9,6 +9,7 @@ from app.core import state
 from app.db import init_db
 from app.api.routes.api_routes import router as api_router
 from app.api.routes.ws_routes import ws_router
+from app.api.telemetry_endpoints import router as telemetry_router
 from app.services.orchestrator import (
     telemetry_broadcast_loop,
     autonomous_bot_loop,
@@ -53,11 +54,13 @@ async def lifespan(app: FastAPI):
         # Apply correct account/api indexes based on saved network mode
         network_mode = db_config.get("network_mode", "TESTNET").upper()
         if network_mode == "MAINNET":
-            state.lighter_client.account_index = db_config.get("mainnet_account_index", "0")
-            state.lighter_client.api_key_index = db_config.get("mainnet_api_key_index", "4")
+            raw_acc = db_config.get("mainnet_account_index", 0)
+            state.lighter_client.account_index = int(raw_acc) if str(raw_acc).isdigit() else raw_acc
+            state.lighter_client.api_key_index = int(db_config.get("mainnet_api_key_index", 4))
         else:
-            state.lighter_client.account_index = db_config.get("testnet_account_index", "0")
-            state.lighter_client.api_key_index = db_config.get("testnet_api_key_index", "4")
+            raw_acc = db_config.get("testnet_account_index", 0)
+            state.lighter_client.account_index = int(raw_acc) if str(raw_acc).isdigit() else raw_acc
+            state.lighter_client.api_key_index = int(db_config.get("testnet_api_key_index", 4))
         
         state.lighter_client.switch_mode(network_mode)
         logger.info(f"Loaded config from DB: Mode={network_mode}, BotActive={state.bot_active}, Paper={state.lighter_client.is_simulation}")
@@ -77,6 +80,9 @@ async def lifespan(app: FastAPI):
 
     for ing in state.ingestors.values():
         await ing.start()
+
+    # Start non-blocking telemetry background disk writer
+    await state.signal_telemetry.start()
         
     broadcast_task = asyncio.create_task(telemetry_broadcast_loop())
     bot_task = asyncio.create_task(autonomous_bot_loop())
@@ -88,6 +94,7 @@ async def lifespan(app: FastAPI):
     broadcast_task.cancel()
     bot_task.cancel()
     snapshot_task.cancel()
+    await state.signal_telemetry.stop()
     for ing in state.ingestors.values():
         await ing.stop()
     await state.lighter_client.aclose()
@@ -106,4 +113,5 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api")
+app.include_router(telemetry_router, prefix="/api")
 app.include_router(ws_router, prefix="/ws")

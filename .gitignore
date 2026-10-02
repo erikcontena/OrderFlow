@@ -65,6 +65,11 @@ Thumbs.db
 *.log
 scratch/
 .tempmediaStorage/
+backend/data/
+backend/signer/find_wasm.py
+backend/signer/patch_wasm.py
+backend/signer/test_artifacts/
+backend/signer/test_wasm.js
 node_modules/
 venv/
 __pycache__/

@@ -23,6 +23,8 @@ from app.analytics.normalizer import VolumeNormalizer, NormalizationResult
 from app.ingestion.time_sync import TimeSynchronizer, ExchangeTick
 from app.execution.lighter_client import LighterExecutionClient
 from app.execution.risk_guard import RiskGuard
+from app.analytics.pnl_tracker import PnLTracker
+from app.services.signal_logger import SignalTelemetry
 from app.core.config import global_bot_config
 
 logger = logging.getLogger("OrderFlowApp")
@@ -96,6 +98,11 @@ risk_guard = RiskGuard(
     execution_client=lighter_client,
     vpin_cutoff_threshold=global_bot_config.vpin_toxicity_threshold,
 )
+
+# ── Telemetry & PnL Tracking ──────────────────────────────────────────────────
+# NON_BLOCKING: In-memory O(1) PnL calculation & high-throughput async signal queue
+pnl_tracker = PnLTracker(initial_balance=10000.0)
+signal_telemetry = SignalTelemetry()
 
 # ── Connected Web Dashboard Clients ───────────────────────────────────────────
 connected_websockets: Set[WebSocket] = set()
@@ -192,3 +199,7 @@ def handle_trade(
     # HFT_OPTIMIZATION: This only updates the running volume sum (O(1)), not the
     # full Z-score computation which happens at bucket seal time.
     volume_normalizer.process_trade(exchange_id, volume, recv_time_s=local_recv_ns / 1_000_000_000.0)
+
+    # STEP 6: Real-time Mark-to-Market PnL & Equity Curve update
+    # NON_BLOCKING: O(1) arithmetic updating position MtM and 1s-sampled ring buffer
+    pnl_tracker.update_mark_price(price, timestamp=local_recv_ns / 1_000_000_000.0)

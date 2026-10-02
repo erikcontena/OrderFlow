@@ -61,6 +61,14 @@ body {
   font-family: var(--font-mono);
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.spin-icon {
+  animation: spin 1.5s linear infinite;
+}
+
 /* Glassmorphism Card Utility */
 .glass-panel {
   background: var(--bg-card);

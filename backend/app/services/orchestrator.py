@@ -10,8 +10,10 @@ from app.core.state import (
 )
 from app.core.config import global_bot_config
 from app.db import DBRepository
+from app.services.strategy_engine import StrategyEngine
 
 logger = logging.getLogger("OrderFlowApp")
+strategy_engine = StrategyEngine(mlofi_threshold=0.25, vpin_kill_threshold=0.85)
 
 async def telemetry_broadcast_loop():
     """High-frequency telemetry broadcast loop to frontend clients (~5-10 Hz)."""
@@ -19,17 +21,18 @@ async def telemetry_broadcast_loop():
     while True:
         try:
             await asyncio.sleep(0.15)  # ~6.6 updates per second
+
+            # Continuously update MLOFI from primary book (Binance) at ~150ms intervals
+            mlofi_data = state.mlofi_engine.update(
+                state.books["binance"].get_top_bids(5),
+                state.books["binance"].get_top_asks(5)
+            )
+
             if not state.connected_websockets:
                 continue
 
             # Sync live account balance & positions from Lighter
             await state.lighter_client.sync_account_state()
-
-            # Update MLOFI from primary book (Binance)
-            mlofi_data = state.mlofi_engine.update(
-                state.books["binance"].get_top_bids(5),
-                state.books["binance"].get_top_asks(5)
-            )
 
             # Build comprehensive telemetry packet
             packet = {
@@ -79,103 +82,144 @@ async def autonomous_bot_loop():
                 state.log_bot_activity("Kill switch active. Bot operations halted.", "error")
                 continue
 
-            # Retrieve signals
+            # Retrieve latest analytics
             vpin_toxic = state.vpin_engine.current_vpin > state.vpin_engine.toxicity_threshold
-            mlofi_data = state.mlofi_engine.history[-1] if state.mlofi_engine.history else {}
-            imbalance = mlofi_data.get("weighted_mlofi", 0)
+            mlofi_data = state.mlofi_engine.history[-1] if state.mlofi_engine.history else {
+                "weighted_mlofi": 0.0
+            }
+            vpin_data = state.vpin_engine.to_dict()
+            footprint_data = {
+                "recent_bars": state.footprint_aggregator.get_recent_bars(count=5)
+            }
             
             top_bid = state.books["binance"].get_top_bids(1)
             top_ask = state.books["binance"].get_top_asks(1)
             if not top_bid or not top_ask:
                 continue
-                
-            # Order Sizing & SL/TP Parameters from config
-            cfg = global_bot_config
-            
-            # Simple simulation logic for placing orders based on MLOFI
-            if not vpin_toxic:
-                current_equity = state.lighter_client.get_state().get("equity_usd", 10000.0)
-                
-                if imbalance > cfg.mlofi_imbalance_threshold:  # Strong Buy Signal
-                    # Randomize placing order so it's not spamming every second
-                    if random.random() < 0.6:
-                        px = top_bid[0][0]
-                        amount = round((current_equity * cfg.risk_per_trade_pct) / px, 4)
-                        if amount >= 0.0001:
-                            ord_res = await state.lighter_client.place_order(symbol="BTC", side="BUY", price=px, amount=amount, post_only=True)
-                            state.log_bot_activity(f"Placed BUY {amount} BTC @ {px} (Imbalance: {imbalance:.2f})", "buy")
-                            tp_px = round(px * (1 + cfg.tp_percentage), 1)
-                            sl_px = round(px * (1 - cfg.sl_percentage), 1)
-                            state.log_bot_activity(f"Target TP: {tp_px} (+{cfg.tp_percentage*100}%), SL: {sl_px} (-{cfg.sl_percentage*100}%)", "info")
-                            
-                            # Persist Order to DB asynchronously
-                            if ord_res:
-                                state.fire_and_forget(DBRepository.save_order({
-                                    "client_order_index": ord_res.client_order_index,
-                                    "exchange_order_id": ord_res.exchange_order_id,
-                                    "symbol": "BTCUSDT",
-                                    "side": "BUY",
-                                    "order_type": "LIMIT",
-                                    "price": px,
-                                    "amount": amount,
-                                    "filled_amount": ord_res.filled_amount,
-                                    "status": ord_res.status,
-                                    "reduce_only": False,
-                                    "is_simulation": state.lighter_client.is_simulation,
-                                }))
-                                
-                                if ord_res.status == "FILLED":
-                                    state.fire_and_forget(DBRepository.record_trade({
-                                        "client_order_index": ord_res.client_order_index,
-                                        "symbol": "BTCUSDT",
-                                        "side": "BUY",
-                                        "exec_price": px,
-                                        "exec_amount": amount,
-                                        "is_simulation": state.lighter_client.is_simulation,
-                                    }))
-                                    await state.lighter_client.place_order(symbol="BTC", side="SELL", price=tp_px, amount=amount, post_only=True, reduce_only=True)
-                                    state.log_bot_activity(f"Placed TP SELL {amount} BTC @ {tp_px} (Reduce-Only)", "sell")
-                            
-                elif imbalance < -cfg.mlofi_imbalance_threshold: # Strong Sell Signal
-                    if random.random() < 0.6:
-                        px = top_ask[0][0]
-                        amount = round((current_equity * cfg.risk_per_trade_pct) / px, 4)
-                        if amount >= 0.0001:
-                            ord_res = await state.lighter_client.place_order(symbol="BTC", side="SELL", price=px, amount=amount, post_only=True)
-                            state.log_bot_activity(f"Placed SELL {amount} BTC @ {px} (Imbalance: {imbalance:.2f})", "sell")
-                            tp_px = round(px * (1 - cfg.tp_percentage), 1)
-                            sl_px = round(px * (1 + cfg.sl_percentage), 1)
-                            state.log_bot_activity(f"Target TP: {tp_px} (+{cfg.tp_percentage*100}%), SL: {sl_px} (-{cfg.sl_percentage*100}%)", "info")
-                            
-                            # Persist Order to DB asynchronously
-                            if ord_res:
-                                state.fire_and_forget(DBRepository.save_order({
-                                    "client_order_index": ord_res.client_order_index,
-                                    "exchange_order_id": ord_res.exchange_order_id,
-                                    "symbol": "BTCUSDT",
-                                    "side": "SELL",
-                                    "order_type": "LIMIT",
-                                    "price": px,
-                                    "amount": amount,
-                                    "filled_amount": ord_res.filled_amount,
-                                    "status": ord_res.status,
-                                    "reduce_only": False,
-                                    "is_simulation": state.lighter_client.is_simulation,
-                                }))
 
-                                if ord_res.status == "FILLED":
-                                    state.fire_and_forget(DBRepository.record_trade({
-                                        "client_order_index": ord_res.client_order_index,
-                                        "symbol": "BTCUSDT",
-                                        "side": "SELL",
-                                        "exec_price": px,
-                                        "exec_amount": amount,
-                                        "is_simulation": state.lighter_client.is_simulation,
-                                    }))
-                                    await state.lighter_client.place_order(symbol="BTC", side="BUY", price=tp_px, amount=amount, post_only=True, reduce_only=True)
-                                    state.log_bot_activity(f"Placed TP BUY {amount} BTC @ {tp_px} (Reduce-Only)", "buy")
-            else:
-                state.log_bot_activity(f"VPIN {state.vpin_engine.current_vpin:.2f} > {state.vpin_engine.toxicity_threshold}. Skipping passive orders.", "warn")
+            mid_px = (top_bid[0][0] + top_ask[0][0]) / 2.0
+            spread_px = top_ask[0][0] - top_bid[0][0]
+            z_scores = state.norm_result.z_scores if state.norm_result else {}
+            vpin_val = state.vpin_engine.current_vpin
+            bucket_sz = state.vpin_engine.bucket_size
+            recent_bars = footprint_data["recent_bars"]
+            fp_delta = recent_bars[-1]["delta"] if recent_bars else 0.0
+
+            # 1. First priority: Strategy Playbook evaluation (Play A Breakout, Play B Absorption, Kill Switch)
+            strat_signal = strategy_engine.evaluate(
+                current_mlofi=mlofi_data,
+                current_vpin=vpin_data,
+                current_footprint=footprint_data,
+            )
+
+            cfg = global_bot_config
+            current_equity = state.lighter_client.get_state().get("equity_usd", 10000.0)
+
+            # 2. If strategy playbook has signal, execute via StrategyEngine
+            if strat_signal:
+                action = strat_signal.get("action", "UNKNOWN")
+                reason = strat_signal.get("reason", "")
+                
+                if action == "FLATTEN":
+                    state.signal_telemetry.record_decision(
+                        action="FLATTEN",
+                        symbol="BTCUSDT",
+                        mid_price=mid_px,
+                        spread=spread_px,
+                        mlofi_score=mlofi_data.get("weighted_mlofi", 0.0),
+                        z_scores=z_scores,
+                        vpin_value=vpin_val,
+                        bucket_size=bucket_sz,
+                        footprint_delta=fp_delta,
+                        is_absorption=False,
+                        reason=reason,
+                    )
+                    state.log_bot_activity(f"SIGNAL FLATTEN: {reason}", "error")
+                    await state.lighter_client.cancel_all_orders()
+                    continue
+
+                side = strat_signal.get("side", "BUY" if "LONG" in action else "SELL")
+                px = top_bid[0][0] if side == "BUY" else top_ask[0][0]
+                amount = round((current_equity * cfg.risk_per_trade_pct) / px, 4)
+
+                if amount >= 0.0001:
+                    ord_res = await strategy_engine.execute_signal(
+                        signal=strat_signal,
+                        symbol="BTCUSDT",
+                        price=px,
+                        amount=amount,
+                        mid_price=mid_px,
+                        spread=spread_px,
+                        current_mlofi=mlofi_data,
+                        current_vpin=vpin_data,
+                        current_footprint=footprint_data,
+                        z_scores=z_scores,
+                        lighter_client=state.lighter_client,
+                        signal_telemetry=state.signal_telemetry,
+                        pnl_tracker=state.pnl_tracker,
+                        risk_guard=state.risk_guard,
+                    )
+                    if ord_res:
+                        state.log_bot_activity(f"Executed {action} {amount} BTC @ {px} ({reason})", "buy" if side == "BUY" else "sell")
+                continue
+
+            # 3. Fallback: Direct MLOFI Flow Trigger if imbalance exceeds threshold
+            imbalance = mlofi_data.get("weighted_mlofi", 0.0)
+            threshold = min(cfg.mlofi_imbalance_threshold, 0.3)  # Responsive threshold
+
+            if not vpin_toxic and abs(imbalance) >= threshold:
+                if imbalance >= threshold:
+                    action = "ENTRY_LONG"
+                    side = "BUY"
+                    px = top_bid[0][0]
+                else:
+                    action = "ENTRY_SHORT"
+                    side = "SELL"
+                    px = top_ask[0][0]
+
+                amount = round((current_equity * cfg.risk_per_trade_pct) / px, 4)
+                if amount >= 0.0001:
+                    # TELEMETRY: Record State of the World snapshot
+                    snap = state.signal_telemetry.record_decision(
+                        action=action,
+                        symbol="BTCUSDT",
+                        mid_price=mid_px,
+                        spread=spread_px,
+                        mlofi_score=imbalance,
+                        z_scores=z_scores,
+                        vpin_value=vpin_val,
+                        bucket_size=bucket_sz,
+                        footprint_delta=fp_delta,
+                        is_absorption=False,
+                        reason=f"MLOFI Imbalance {imbalance:.2f} >= {threshold:.2f}",
+                    )
+
+                    ord_res = await state.lighter_client.place_order(
+                        symbol="BTC", side=side, price=px, amount=amount, post_only=True
+                    )
+                    state.log_bot_activity(f"Placed {action} {amount} BTC @ {px} (Imbalance: {imbalance:.2f})", "buy" if side == "BUY" else "sell")
+
+                    if ord_res and ord_res.status == "FILLED":
+                        fill_px = ord_res.price if ord_res.price > 0 else px
+                        snap.execution_details = {
+                            "client_order_index": ord_res.client_order_index,
+                            "exchange_order_id": ord_res.exchange_order_id,
+                            "fill_price": fill_px,
+                            "fill_amount": ord_res.filled_amount,
+                            "slippage_bps": 0.0,
+                            "order_type": "LIMIT",
+                        }
+                        state.pnl_tracker.record_fill(
+                            side=side,
+                            price=fill_px,
+                            size=ord_res.filled_amount,
+                            fee=0.0,
+                            client_order_index=ord_res.client_order_index,
+                            symbol="BTCUSDT",
+                            action=action,
+                        )
+            elif vpin_toxic:
+                state.log_bot_activity(f"VPIN {vpin_val:.2f} > {state.vpin_engine.toxicity_threshold}. Skipping passive orders.", "warn")
             
             # Active Position Sizing/Inventory check & Cancel old orders
             # Limit active inventory to max active positions
