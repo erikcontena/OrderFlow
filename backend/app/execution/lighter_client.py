@@ -392,13 +392,18 @@ class LighterExecutionClient:
                         if post_only
                         else signer_client.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL
                     )
+                    ord_type = (
+                        signer_client.ORDER_TYPE_LIMIT
+                        if post_only
+                        else signer_client.ORDER_TYPE_MARKET
+                    )
                     res_sign = signer_client.sign_create_order(
                         market_index=int(spec["market_id"]),
                         client_order_index=int(order_index),
                         base_amount=int(int_amount),
                         price=int(int_price),
                         is_ask=1 if side.upper() == "SELL" else 0,
-                        order_type=signer_client.ORDER_TYPE_LIMIT,
+                        order_type=ord_type,
                         time_in_force=tif,
                         reduce_only=bool(reduce_only),
                         order_expiry=int(order_expiry),
@@ -426,7 +431,7 @@ class LighterExecutionClient:
                             "baseAmount": int(int_amount),
                             "price": int(int_price),
                             "isAsk": bool(side.upper() == "SELL"),
-                            "orderType": 0,  # Limit
+                            "orderType": 0 if post_only else 1,
                             "timeInForce": int(time_in_force),
                             "reduceOnly": bool(reduce_only),
                             "orderExpiry": int(order_expiry),

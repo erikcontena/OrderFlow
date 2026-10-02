@@ -33,6 +33,20 @@ logger = logging.getLogger("OrderFlowApp")
 bot_active = True
 bot_logs = deque(maxlen=20)
 
+# State-driven Order & Position Tracking
+active_order_id: Optional[int] = None
+active_order_price: Optional[float] = None
+active_order_side: Optional[str] = None
+last_entry_fill_time: float = 0.0
+last_close_fill_time: float = 0.0
+
+# Active Position Tracking for Dynamic SL/TP & Minimum Hold Time
+active_position_side: Optional[str] = None       # "BUY" (Long) or "SELL" (Short)
+active_position_entry_price: float = 0.0
+active_position_size: float = 0.0
+active_position_sl: float = 0.0
+active_position_tp: float = 0.0
+
 def log_bot_activity(message: str, level: str = "info"):
     try:
         timestamp = asyncio.get_event_loop().time()

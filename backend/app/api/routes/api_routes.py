@@ -37,12 +37,106 @@ async def get_history_analytics(limit: int = 100):
 
 @router.get("/state")
 async def get_state():
+    import time
+    mlofi_data = state.mlofi_engine.update(
+        state.books["binance"].get_top_bids(5),
+        state.books["binance"].get_top_asks(5)
+    )
+    vpin_val = state.vpin_engine.current_vpin
+    vpin_toxic = vpin_val > state.vpin_engine.toxicity_threshold
+    footprint_bars = state.footprint_aggregator.get_recent_bars(count=8)
+    now_ts = time.time()
+    time_since_close = now_ts - state.last_close_fill_time
+    time_since_loss = now_ts - state.risk_guard.last_loss_timestamp
+    is_post_close_cooldown = time_since_close < 10.0
+    is_post_loss_cooldown = time_since_loss < state.risk_guard.post_loss_cooldown_seconds
+
+    if state.risk_guard.kill_switch_active:
+        signal_badge = "KILL_SWITCH"
+    elif is_post_loss_cooldown or is_post_close_cooldown:
+        signal_badge = "COOLDOWN"
+    elif state.active_position_side is not None:
+        signal_badge = f"POSITION_{state.active_position_side}"
+    else:
+        signal_badge = "HOLD"
+
     return {
+        # Panel 1: Equity Curve & PnL
+        "equity_pnl": {
+            "total_equity": state.pnl_tracker.total_equity,
+            "realized_pnl": round(state.pnl_tracker.realized_pnl, 2),
+            "unrealized_pnl": round(state.pnl_tracker.unrealized_pnl, 2),
+            "daily_pnl_usd": round(state.risk_guard.daily_pnl_usd, 2),
+            "running_drawdown_pct": round(state.pnl_tracker.running_drawdown, 2),
+            "high_water_mark": round(state.pnl_tracker.high_water_mark, 2),
+            "closed_trades_today": len(state.pnl_tracker._trade_history),
+            "snapshots": state.pnl_tracker.get_equity_snapshots(limit=60),
+        },
+
+        # Panel 2: Signal Monitor
+        "signal_monitor": {
+            "status_badge": signal_badge,
+            "signal_action": "HOLD",
+            "signal_reason": "OrderFlow active scan",
+            "mlofi_imbalance": round(float(mlofi_data.get("weighted_mlofi", 0.0)), 4),
+            "z_scores": state.norm_result.z_scores if state.norm_result else {},
+            "vpin_value": round(vpin_val, 4),
+            "vpin_threshold": state.vpin_engine.toxicity_threshold,
+            "vpin_is_toxic": vpin_toxic,
+            "footprint_delta_recent": footprint_bars[-1]["delta"] if footprint_bars else 0.0,
+            "cooldown_remaining_sec": max(0.0, round(10.0 - time_since_close, 1)),
+            "loss_cooldown_remaining_sec": max(0.0, round(state.risk_guard.post_loss_cooldown_seconds - time_since_loss, 1)),
+        },
+
+        # Panel 3: Active Position & Order & Recent Trades
+        "active_position": {
+            "side": state.active_position_side,
+            "entry_price": state.active_position_entry_price,
+            "size": state.active_position_size,
+            "sl": state.active_position_sl,
+            "tp": state.active_position_tp,
+            "hold_time_sec": round(now_ts - state.last_entry_fill_time, 1) if state.active_position_side else 0.0,
+            "min_hold_remaining": max(0.0, round(5.0 - (now_ts - state.last_entry_fill_time), 1)) if state.active_position_side else 0.0,
+            "unrealized_pnl": round(state.pnl_tracker.unrealized_pnl, 2),
+        },
+        "active_order": {
+            "id": state.active_order_id,
+            "price": state.active_order_price,
+            "side": state.active_order_side,
+        },
+        "recent_trades": state.pnl_tracker.get_trade_history(limit=10),
+
+        # Panel 4: Risk Guard Status
+        "risk_guard": {
+            "kill_switch_active": state.risk_guard.kill_switch_active,
+            "can_open_position": state.risk_guard.can_open_position(),
+            "current_positions": state.risk_guard.current_positions,
+            "max_concurrent_positions": state.risk_guard.max_concurrent_positions,
+            "daily_pnl_usd": round(state.risk_guard.daily_pnl_usd, 2),
+            "max_daily_loss_usd": state.risk_guard.max_daily_loss_usd,
+            "post_loss_cooldown_active": is_post_loss_cooldown,
+            "post_loss_cooldown_sec": max(0.0, round(state.risk_guard.post_loss_cooldown_seconds - time_since_loss, 1)),
+            "stp_blocked_count": state.risk_guard.stp_blocked_count,
+            "desert_mode_active": state.risk_guard.desert_mode_active,
+            "alerts": state.risk_guard.alerts[-5:],
+            "rtt_ms": state.lighter_client.get_state().get("rtt_ms", 0.0) or (state.ingestors.get("binance").rtt_ms if "binance" in state.ingestors else 0.0),
+        },
+
+        # Panel 5: Exchange Health & Time Synchronization
+        "exchange_health": {
+            "connections": {k: ing.get_telemetry() for k, ing in state.ingestors.items()},
+            "staleness_ms": state.time_sync.get_exchange_staleness_ms() if hasattr(state.time_sync, "get_exchange_staleness_ms") else {},
+            "volume_z_scores": state.norm_result.z_scores if state.norm_result else {},
+            "market_weights": state.norm_result.market_weights if state.norm_result else {},
+            "rvol_multiplier": state.norm_result.rvol_multiplier if state.norm_result else 1.0,
+        },
+
+        # Baseline backward compatible fields
         "orderbooks": {k: b.to_dict(depth=10) for k, b in state.books.items()},
         "vpin": state.vpin_engine.to_dict(),
-        "mlofi": state.mlofi_engine.update(state.books["binance"].get_top_bids(5), state.books["binance"].get_top_asks(5)),
+        "mlofi": mlofi_data,
         "cvd": state.footprint_aggregator.get_cvd_summary(),
-        "footprint_bars": state.footprint_aggregator.get_recent_bars(count=8),
+        "footprint_bars": footprint_bars,
         "execution": state.lighter_client.get_state(),
         "open_orders": state.lighter_client.get_open_orders(),
         "risk": state.risk_guard.get_status(),
