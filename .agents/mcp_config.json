@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "gcloud": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@google-cloud/gcloud-mcp"
+      ],
+      "env": {
+        "CLOUDSDK_CORE_PROJECT": "orderflow-hft-engine"
+      }
+    },
+    "gcp": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "gcp-mcp"
+      ],
+      "env": {
+        "GCP_DEFAULT_PROJECT_ID": "orderflow-hft-engine"
+      }
+    }
+  }
+}

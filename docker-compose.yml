@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # 1. PostgreSQL Database (Orders, Trades, VPIN & MLOFI Snapshots)
+  postgres:
+    image: postgres:16-alpine
+    container_name: orderflow-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: orderflow
+      POSTGRES_PASSWORD: orderflow_secure_password
+      POSTGRES_DB: orderflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orderflow -d orderflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. HFT Backend Engine (FastAPI + Node.js WASM Signer + Bot Loop)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: orderflow-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://orderflow:orderflow_secure_password@postgres:5432/orderflow
+      - LIGHTER_MODE=testnet
+      - LIGHTER_PAPER_TRADING=False
+      - LIGHTER_ACCOUNT_INDEX=275
+      - LIGHTER_API_KEY_INDEX=4
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+
+  # 3. High-Performance Dashboard (React + Vite served via Nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: orderflow-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  pgdata:
+    driver: local
